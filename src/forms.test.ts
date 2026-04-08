@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveCanonical, extractFields } from "./forms";
+import { resolveCanonicalName as resolveCanonical, extractFields } from "./forms";
 
 describe("resolveCanonical — field name mapping", () => {
   const cases: Array<[string, string]> = [

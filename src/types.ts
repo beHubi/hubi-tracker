@@ -9,6 +9,7 @@ export interface InitOptions {
   apiBase: string;
   autoBindForms?: boolean;
   consent?: Partial<ConsentState>;
+  debug?: boolean;
 }
 
 export interface Attribution {

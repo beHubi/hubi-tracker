@@ -9,6 +9,7 @@ import { initApi, sendEvent } from "./api";
 import { captureAttribution, getFirstTouch, getLastTouch } from "./attribution";
 import { getConsent, initConsent, setConsent as storeConsent } from "./consent";
 import { autoBindForms, bindForm as bindFormEl, extractFields } from "./forms";
+import { enableDebug, log, warn } from "./logger";
 import { initPageviewTracking } from "./pageview";
 import { touchSession, getSessionId } from "./session";
 import { getAnonymousId } from "./visitor";
@@ -52,7 +53,10 @@ function processQueue(queue: CommandTuple[]): void {
 // ---------------------------------------------------------------------------
 
 function buildPayload(event: string, properties?: Record<string, unknown>): TrackPayload {
-  if (!_opts) throw new Error("hubi-tracker: call Hubi.init() first");
+  if (!_opts) {
+    warn("Hubi.init() was not called. Did you forget to add the init snippet?");
+    throw new Error("hubi-tracker: call Hubi.init() first");
+  }
 
   touchSession();
 
@@ -91,11 +95,19 @@ export const Hubi = {
     if (_opts) return; // idempotent
     _opts = opts;
 
+    if (opts.debug) enableDebug();
+
     initConsent(opts.consent);
     _anonymousId = getAnonymousId();
 
     captureAttribution(location.href);
     initApi(opts.apiBase);
+
+    log("init", {
+      site: opts.site,
+      anonymous_id: _anonymousId,
+      first_touch: getFirstTouch(),
+    });
 
     // Initial pageview
     Hubi.pageview();
@@ -113,12 +125,14 @@ export const Hubi = {
 
   pageview(url?: string): void {
     const payload = buildPayload("pageview", { url: url ?? location.href });
+    log("pageview →", url ?? location.href);
     sendEvent(payload);
   },
 
   identify(email: string): void {
     _email = email;
     const payload = buildPayload("identify", { email });
+    log("identify →", email);
     sendEvent(payload);
   },
 
