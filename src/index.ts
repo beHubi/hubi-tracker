@@ -1,17 +1,36 @@
 import type {
   BindFormOptions,
   ConsentState,
+  EventContext,
   InitOptions,
+  LeadFields,
+  LeadPayload,
+  PageviewPayload,
   SubmitOptions,
-  TrackPayload,
 } from "./types";
-import { initApi, sendEvent } from "./api";
-import { captureAttribution, getFirstTouch, getLastTouch } from "./attribution";
+import { initApi, sendLead, sendPageview } from "./api";
+import {
+  captureAttribution,
+  currentClickIds,
+  currentUtm,
+  getFirstTouch,
+  getLastTouch,
+} from "./attribution";
+import { ensureFbc, readAdCookies } from "./cookies";
 import { getConsent, initConsent, setConsent as storeConsent } from "./consent";
+import { collectDevice } from "./device";
 import { autoBindForms, bindForm as bindFormEl, extractFields } from "./forms";
+import type { ExtractedFields } from "./forms";
+import {
+  clearIdentifiedEmail,
+  ensureLandingUrl,
+  loadIdentifiedEmail,
+  saveIdentifiedEmail,
+  uuid,
+} from "./identity";
 import { enableDebug, log, warn } from "./logger";
-import { initPageviewTracking } from "./pageview";
-import { touchSession, getSessionId } from "./session";
+import { currentReferrer, initPageviewTracking, primeReferrer } from "./pageview";
+import { getSessionId, touchSession } from "./session";
 import { getAnonymousId } from "./visitor";
 
 // ---------------------------------------------------------------------------
@@ -20,70 +39,117 @@ import { getAnonymousId } from "./visitor";
 
 let _opts: InitOptions | null = null;
 let _anonymousId = "";
-let _email: string | null = null;
+let _initialized = false;
 
 // ---------------------------------------------------------------------------
-// Queue flush — supports `HubiTracker.push([...])` snippet pattern
+// Command dispatch (shared between initial queue flush and post-load push)
 // ---------------------------------------------------------------------------
 
 type CommandTuple = [string, ...unknown[]];
 
-function processQueue(queue: CommandTuple[]): void {
-  for (const item of queue) {
-    const [cmd, ...args] = item;
-    switch (cmd) {
-      case "init":
-        Hubi.init(args[0] as InitOptions);
-        break;
-      case "pageview":
-        Hubi.pageview(args[0] as string | undefined);
-        break;
-      case "identify":
-        Hubi.identify(args[0] as string);
-        break;
-      case "setConsent":
-        Hubi.setConsent(args[0] as Partial<ConsentState>);
-        break;
-    }
+function dispatch(cmd: CommandTuple): void {
+  const [name, ...args] = cmd;
+  switch (name) {
+    case "init":
+      Hubi.init(args[0] as InitOptions);
+      break;
+    case "pageview":
+      Hubi.pageview(args[0] as string | undefined);
+      break;
+    case "identify":
+      Hubi.identify(args[0] as string);
+      break;
+    case "setConsent":
+      Hubi.setConsent(args[0] as Partial<ConsentState>);
+      break;
+    case "clearIdentity":
+      Hubi.clearIdentity();
+      break;
+    default:
+      warn(`unknown command: ${String(name)}`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Core helpers
+// Context builder — the heart of every payload
 // ---------------------------------------------------------------------------
 
-function buildPayload(event: string, properties?: Record<string, unknown>): TrackPayload {
-  if (!_opts) {
-    warn("Hubi.init() was not called. Did you forget to add the init snippet?");
-    throw new Error("hubi-tracker: call Hubi.init() first");
-  }
-
+function buildContext(): EventContext {
   touchSession();
+  const consent = getConsent();
+  const url = location.href;
+
+  const utm = currentUtm();
+  const clickIds = currentClickIds();
+  const adCookies = ensureFbc(clickIds, readAdCookies());
 
   return {
-    event,
     anonymous_id: _anonymousId,
     session_id: getSessionId(),
-    public_key: _opts.publicKey,
-    site: _opts.site,
-    url: location.href,
-    referrer: document.referrer,
+    page_url: url,
+    page_title: document.title || "",
+    landing_url: ensureLandingUrl(url),
+    referrer_url: currentReferrer(),
+    consent,
+    device: collectDevice(),
+    utm,
+    click_ids: clickIds,
+    ad_cookies: adCookies,
     first_touch: getFirstTouch(),
     last_touch: getLastTouch(),
-    consent: getConsent(),
-    properties: {
-      ...properties,
-      ...(event === "lead" && _email ? { email: _email } : {}),
-    },
     ts: Date.now(),
   };
 }
 
-function handleFormSubmit(fields: Record<string, string>, formId: string): void {
-  if (fields.email) _email = fields.email;
+// ---------------------------------------------------------------------------
+// Consent enforcement
+// ---------------------------------------------------------------------------
 
-  const payload = buildPayload("lead", { formId, ...fields });
-  sendEvent(payload);
+function analyticsAllowed(): boolean {
+  return getConsent().analytics === true;
+}
+
+function marketingAllowed(): boolean {
+  return getConsent().marketing === true;
+}
+
+// ---------------------------------------------------------------------------
+// Form submit handler
+// ---------------------------------------------------------------------------
+
+async function handleFormSubmit(
+  result: ExtractedFields,
+  formId: string,
+): Promise<boolean> {
+  if (!_initialized) {
+    warn("form submit ignored — Hubi.init() was not called");
+    return false;
+  }
+
+  // Honeypot tripped: silently succeed (do nothing, pretend it worked).
+  if (result.honeypot) {
+    log("honeypot tripped — dropping submission silently");
+    return true;
+  }
+
+  // Persist identified email for late-binding across pages
+  if (result.fields.email) {
+    saveIdentifiedEmail(result.fields.email);
+  } else if (loadIdentifiedEmail()) {
+    result.fields.email = loadIdentifiedEmail() ?? undefined;
+  }
+
+  const payload: LeadPayload = {
+    form_id: formId,
+    external_id: uuid(),
+    event_id: uuid(),
+    hubi_hp: "",
+    fields: result.fields,
+    extra: result.extra,
+    context: buildContext(),
+  };
+
+  return sendLead(payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +158,7 @@ function handleFormSubmit(fields: Record<string, string>, formId: string): void 
 
 export const Hubi = {
   init(opts: InitOptions): void {
-    if (_opts) return; // idempotent
+    if (_initialized) return;
     _opts = opts;
 
     if (opts.debug) enableDebug();
@@ -100,21 +166,25 @@ export const Hubi = {
     initConsent(opts.consent);
     _anonymousId = getAnonymousId();
 
-    captureAttribution(location.href);
-    initApi(opts.apiBase);
+    primeReferrer(document.referrer || "");
+    captureAttribution(location.href, document.referrer || "");
+    ensureLandingUrl(location.href);
+
+    initApi(opts.apiBase, opts.publicKey);
+
+    _initialized = true;
 
     log("init", {
       site: opts.site,
       anonymous_id: _anonymousId,
+      consent: getConsent(),
       first_touch: getFirstTouch(),
     });
 
-    // Initial pageview
     Hubi.pageview();
 
-    // SPA routing
     initPageviewTracking((url) => {
-      captureAttribution(url);
+      captureAttribution(url, currentReferrer());
       Hubi.pageview(url);
     });
 
@@ -124,30 +194,65 @@ export const Hubi = {
   },
 
   pageview(url?: string): void {
-    const payload = buildPayload("pageview", { url: url ?? location.href });
+    if (!_initialized) {
+      warn("pageview ignored — Hubi.init() was not called");
+      return;
+    }
+    if (!analyticsAllowed()) {
+      log("pageview blocked — analytics consent not granted");
+      return;
+    }
+
+    const payload: PageviewPayload = { context: buildContext() };
+    if (url) payload.context.page_url = url;
+
     log("pageview →", url ?? location.href);
-    sendEvent(payload);
+    sendPageview(payload);
   },
 
   identify(email: string): void {
-    _email = email;
-    const payload = buildPayload("identify", { email });
+    if (!_initialized) {
+      warn("identify ignored — Hubi.init() was not called");
+      return;
+    }
+    saveIdentifiedEmail(email);
     log("identify →", email);
-    sendEvent(payload);
+    // identify does not send an event by itself — the email attaches
+    // to the next lead/pageview automatically.
+  },
+
+  clearIdentity(): void {
+    clearIdentifiedEmail();
+    log("identity cleared");
   },
 
   bindForm(el: HTMLFormElement, options: BindFormOptions = {}): void {
     bindFormEl(el, options, handleFormSubmit);
   },
 
-  submit(options: SubmitOptions): void {
-    handleFormSubmit(options.fields, options.formId);
+  async submit(options: SubmitOptions): Promise<boolean> {
+    const CANONICAL = new Set([
+      "name", "email", "phone", "company", "job_title", "message", "mql_question",
+    ]);
+    const fields: LeadFields = {};
+    const extra: Record<string, string> = {};
+    for (const [key, value] of Object.entries(options.fields)) {
+      if (!value) continue;
+      if (CANONICAL.has(key)) {
+        (fields as Record<string, string>)[key] = value;
+      } else {
+        extra[key] = value;
+      }
+    }
+    return handleFormSubmit({ fields, extra, honeypot: "" }, options.formId);
   },
 
   setConsent(state: Partial<ConsentState>): void {
     storeConsent(state);
+    log("consent updated →", getConsent());
   },
 
+  getConsent,
   extractFields,
 };
 
@@ -169,29 +274,13 @@ declare global {
 
   const existing = window.HubiTracker;
   if (Array.isArray(existing) && existing.length > 0) {
-    processQueue(existing as CommandTuple[]);
+    for (const cmd of existing as CommandTuple[]) dispatch(cmd);
   }
 
-  // Override push so future calls execute immediately
   const liveQueue: unknown[] = [];
-  (liveQueue as unknown as { push: (cmd: CommandTuple) => void }).push = (cmd: CommandTuple) => {
-    const [name, ...args] = cmd;
-    switch (name) {
-      case "init":
-        Hubi.init(args[0] as InitOptions);
-        break;
-      case "pageview":
-        Hubi.pageview(args[0] as string | undefined);
-        break;
-      case "identify":
-        Hubi.identify(args[0] as string);
-        break;
-      case "setConsent":
-        Hubi.setConsent(args[0] as Partial<ConsentState>);
-        break;
-    }
+  (liveQueue as unknown as { push: (cmd: CommandTuple) => void }).push = dispatch;
+  window.HubiTracker = liveQueue as unknown as CommandTuple[] & {
+    push: (cmd: CommandTuple) => void;
   };
-  window.HubiTracker = liveQueue as unknown as CommandTuple[] & { push: (cmd: CommandTuple) => void };
 })();
 
-export default Hubi;

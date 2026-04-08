@@ -1,105 +1,142 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { initApi, sendEvent } from "./api";
-import type { TrackPayload } from "./types";
+import { initApi, pathFor, sendLead, sendPageview } from "./api";
+import type { EventContext, LeadPayload, PageviewPayload } from "./types";
 
-function makePayload(overrides?: Partial<TrackPayload>): TrackPayload {
+function makeContext(): EventContext {
   return {
-    event: "pageview",
     anonymous_id: "anon-123",
     session_id: "sess-456",
-    public_key: "hubi_pk_test",
-    site: "test-site",
-    url: "https://example.com/",
-    referrer: "",
+    page_url: "https://example.com/lp",
+    page_title: "LP",
+    landing_url: "https://example.com/lp",
+    referrer_url: "",
+    consent: { marketing: true, analytics: true },
+    device: {
+      type: "desktop",
+      ua: "test-ua",
+      language: "pt-BR",
+      timezone: "America/Sao_Paulo",
+      screen: "1920x1080",
+      viewport: "1280x720",
+    },
+    utm: { source: "google", medium: "cpc" },
+    click_ids: { gclid: "abc" },
+    ad_cookies: { fbp: "fb.1.123.456" },
     first_touch: null,
     last_touch: null,
-    consent: { marketing: true, analytics: true },
-    properties: {},
-    ts: Date.now(),
-    ...overrides,
+    ts: 1700000000000,
   };
 }
 
-describe("sendEvent — payload shape", () => {
+function makeLead(): LeadPayload {
+  return {
+    form_id: "contact",
+    external_id: "ext-uuid",
+    event_id: "evt-uuid",
+    hubi_hp: "",
+    fields: { name: "João", email: "joao@example.com" },
+    extra: {},
+    context: makeContext(),
+  };
+}
+
+function makePageview(): PageviewPayload {
+  return { context: makeContext() };
+}
+
+describe("pathFor — endpoint routing", () => {
+  it("routes leads to /leads", () => {
+    expect(pathFor("lead")).toBe("/leads");
+  });
+
+  it("routes pageviews to /events/pageview", () => {
+    expect(pathFor("pageview")).toBe("/events/pageview");
+  });
+});
+
+describe("sendPageview + sendLead — HTTP shape", () => {
   beforeEach(() => {
     vi.stubGlobal("navigator", { onLine: true });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
-    initApi("https://app.hubi.com.br/api/public/v1");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201 }));
+    initApi("https://app.hubi.com.br/api/public/v1/", "hubi_pk_test");
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("POSTs to /events with correct shape", async () => {
-    const payload = makePayload();
-    await sendEvent(payload);
+  it("posts pageview to /events/pageview with public key + timestamp headers", async () => {
+    await sendPageview(makePageview());
 
-    expect(fetch).toHaveBeenCalledWith(
-      "https://app.hubi.com.br/api/public/v1/events",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("https://app.hubi.com.br/api/public/v1/events/pageview");
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(init.headers["X-Hubi-Public-Key"]).toBe("hubi_pk_test");
+    expect(init.headers["X-Hubi-Timestamp"]).toMatch(/^\d+$/);
+  });
 
-    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+  it("posts lead to /leads with full payload shape", async () => {
+    await sendLead(makeLead());
+
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("https://app.hubi.com.br/api/public/v1/leads");
+
+    const body = JSON.parse(init.body);
     expect(body).toMatchObject({
-      event: "pageview",
-      anonymous_id: "anon-123",
-      public_key: "hubi_pk_test",
-      site: "test-site",
+      form_id: "contact",
+      external_id: "ext-uuid",
+      event_id: "evt-uuid",
+      hubi_hp: "",
+      fields: { name: "João", email: "joao@example.com" },
+      context: {
+        anonymous_id: "anon-123",
+        session_id: "sess-456",
+        consent: { marketing: true, analytics: true },
+        device: expect.any(Object),
+        utm: { source: "google", medium: "cpc" },
+        click_ids: { gclid: "abc" },
+      },
     });
   });
 
-  it("includes all required fields", async () => {
-    const payload = makePayload({ event: "lead", properties: { formId: "contact" } });
-    await sendEvent(payload);
-
-    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
-    expect(body).toHaveProperty("anonymous_id");
-    expect(body).toHaveProperty("session_id");
-    expect(body).toHaveProperty("public_key");
-    expect(body).toHaveProperty("site");
-    expect(body).toHaveProperty("url");
-    expect(body).toHaveProperty("ts");
-    expect(body).toHaveProperty("consent");
+  it("strips trailing slashes from apiBase", async () => {
+    initApi("https://app.hubi.com.br/api/public/v1///", "hubi_pk_test");
+    await sendPageview(makePageview());
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("https://app.hubi.com.br/api/public/v1/events/pageview");
   });
 });
 
-describe("sendEvent — offline queuing", () => {
-  beforeEach(() => {
-    vi.stubGlobal("navigator", { onLine: false });
-    vi.stubGlobal("fetch", vi.fn());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
+describe("send — offline + failure fallback", () => {
+  afterEach(() => vi.unstubAllGlobals());
 
   it("does not call fetch when offline", async () => {
-    initApi("https://app.hubi.com.br/api/public/v1");
-    const payload = makePayload();
-    await sendEvent(payload);
+    vi.stubGlobal("navigator", { onLine: false });
+    vi.stubGlobal("fetch", vi.fn());
+    initApi("https://api.test/v1", "pk_x");
+
+    const ok = await sendPageview(makePageview());
+    expect(ok).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });
-});
 
-describe("sendEvent — retry on failure", () => {
-  beforeEach(() => {
+  it("returns false when fetch throws (enqueues silently)", async () => {
     vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("boom")));
+    initApi("https://api.test/v1", "pk_x");
+
+    const ok = await sendLead(makeLead());
+    expect(ok).toBe(false);
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
+  it("returns false on 401 (reports in debug but does not throw)", async () => {
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+    initApi("https://api.test/v1", "pk_x");
 
-  it("enqueues event when fetch throws", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network error")));
-    initApi("https://app.hubi.com.br/api/public/v1");
-
-    const payload = makePayload();
-    // Should not throw — falls back to queue
-    await expect(sendEvent(payload)).resolves.toBeUndefined();
+    const ok = await sendLead(makeLead());
+    expect(ok).toBe(false);
   });
 });

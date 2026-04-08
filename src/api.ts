@@ -1,38 +1,62 @@
-import type { QueuedEvent, TrackPayload } from "./types";
+import type { LeadPayload, PageviewPayload, QueueKind, QueuedEvent, TrackerPayload } from "./types";
+import { warn } from "./logger";
 
 const DB_NAME = "hubi_queue";
 const DB_VERSION = 1;
 const STORE_NAME = "events";
 const MAX_ATTEMPTS = 5;
-const BACKOFF_BASE = 1000; // ms
+const BACKOFF_BASE = 1000;
+
+const LEADS_PATH = "/leads";
+const PAGEVIEW_PATH = "/events/pageview";
 
 let _apiBase = "";
+let _publicKey = "";
 let _db: IDBDatabase | null = null;
 let _draining = false;
 
-export function initApi(apiBase: string): void {
-  _apiBase = apiBase;
+export function initApi(apiBase: string, publicKey: string): void {
+  // Strip trailing slash so we can always concatenate with a leading one.
+  _apiBase = apiBase.replace(/\/+$/, "");
+  _publicKey = publicKey;
+
   openDb().then(() => {
     drainQueue();
   });
 
-  window.addEventListener("online", drainQueue);
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", drainQueue);
+  }
+}
+
+export function pathFor(kind: QueueKind): string {
+  return kind === "lead" ? LEADS_PATH : PAGEVIEW_PATH;
 }
 
 // ---------------------------------------------------------------------------
-// Public
+// Public send
 // ---------------------------------------------------------------------------
 
-export async function sendEvent(payload: TrackPayload): Promise<void> {
-  if (!navigator.onLine) {
-    await enqueue(payload);
-    return;
+export async function sendPageview(payload: PageviewPayload): Promise<boolean> {
+  return send("pageview", payload);
+}
+
+export async function sendLead(payload: LeadPayload): Promise<boolean> {
+  return send("lead", payload);
+}
+
+async function send(kind: QueueKind, payload: TrackerPayload): Promise<boolean> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    await enqueue(kind, payload);
+    return false;
   }
 
   try {
-    await post(payload);
+    await post(kind, payload);
+    return true;
   } catch {
-    await enqueue(payload);
+    await enqueue(kind, payload);
+    return false;
   }
 }
 
@@ -40,15 +64,28 @@ export async function sendEvent(payload: TrackPayload): Promise<void> {
 // HTTP
 // ---------------------------------------------------------------------------
 
-async function post(payload: TrackPayload): Promise<void> {
-  const res = await fetch(`${_apiBase}/events`, {
+async function post(kind: QueueKind, payload: TrackerPayload): Promise<void> {
+  const url = `${_apiBase}${pathFor(kind)}`;
+  const body = JSON.stringify(payload);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    mode: "cors",
+    credentials: "omit",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Hubi-Public-Key": _publicKey,
+      "X-Hubi-Timestamp": timestamp,
+    },
+    body,
     keepalive: true,
   });
 
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      warn(`request rejected (${res.status}). Check public key and allowed origins in backoffice.`);
+    }
     throw new Error(`hubi-tracker: HTTP ${res.status}`);
   }
 }
@@ -58,13 +95,12 @@ async function post(payload: TrackPayload): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function openDb(): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (_db) {
       resolve();
       return;
     }
-
-    if (!("indexedDB" in window)) {
+    if (typeof indexedDB === "undefined") {
       resolve();
       return;
     }
@@ -72,41 +108,33 @@ function openDb(): Promise<void> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
 
     req.onupgradeneeded = () => {
-      req.result.createObjectStore(STORE_NAME, {
-        keyPath: "id",
-        autoIncrement: true,
-      });
+      req.result.createObjectStore(STORE_NAME, { keyPath: "id", autoIncrement: true });
     };
-
     req.onsuccess = () => {
       _db = req.result;
       resolve();
     };
-
-    req.onerror = () => reject(req.error);
+    req.onerror = () => resolve(); // degrade silently
   });
 }
 
-async function enqueue(payload: TrackPayload): Promise<void> {
-  const entry: QueuedEvent = {
-    payload,
-    attempts: 0,
-    queued_at: Date.now(),
-  };
-
+async function enqueue(kind: QueueKind, payload: TrackerPayload): Promise<void> {
   await openDb();
   if (!_db) return;
 
-  return new Promise((resolve, reject) => {
+  const entry: QueuedEvent = { kind, payload, attempts: 0, queued_at: Date.now() };
+
+  return new Promise((resolve) => {
     const tx = _db!.transaction(STORE_NAME, "readwrite");
     const req = tx.objectStore(STORE_NAME).add(entry);
     req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    req.onerror = () => resolve();
   });
 }
 
 async function drainQueue(): Promise<void> {
-  if (_draining || !navigator.onLine) return;
+  if (_draining) return;
+  if (typeof navigator !== "undefined" && !navigator.onLine) return;
   _draining = true;
 
   await openDb();
@@ -120,7 +148,7 @@ async function drainQueue(): Promise<void> {
 
     for (const { id, entry } of entries) {
       try {
-        await post(entry.payload);
+        await post(entry.kind, entry.payload);
         await deleteEntry(id);
       } catch {
         entry.attempts += 1;
@@ -138,8 +166,9 @@ async function drainQueue(): Promise<void> {
 }
 
 function getAllEntries(): Promise<Array<{ id: number; entry: QueuedEvent }>> {
-  return new Promise((resolve, reject) => {
-    const tx = _db!.transaction(STORE_NAME, "readonly");
+  return new Promise((resolve) => {
+    if (!_db) return resolve([]);
+    const tx = _db.transaction(STORE_NAME, "readonly");
     const req = tx.objectStore(STORE_NAME).openCursor();
     const results: Array<{ id: number; entry: QueuedEvent }> = [];
 
@@ -152,26 +181,27 @@ function getAllEntries(): Promise<Array<{ id: number; entry: QueuedEvent }>> {
         resolve(results);
       }
     };
-
-    req.onerror = () => reject(req.error);
+    req.onerror = () => resolve(results);
   });
 }
 
 function deleteEntry(id: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const tx = _db!.transaction(STORE_NAME, "readwrite");
+  return new Promise((resolve) => {
+    if (!_db) return resolve();
+    const tx = _db.transaction(STORE_NAME, "readwrite");
     const req = tx.objectStore(STORE_NAME).delete(id);
     req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    req.onerror = () => resolve();
   });
 }
 
 function updateEntry(id: number, entry: QueuedEvent): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const tx = _db!.transaction(STORE_NAME, "readwrite");
+  return new Promise((resolve) => {
+    if (!_db) return resolve();
+    const tx = _db.transaction(STORE_NAME, "readwrite");
     const req = tx.objectStore(STORE_NAME).put({ ...entry, id });
     req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    req.onerror = () => resolve();
   });
 }
 

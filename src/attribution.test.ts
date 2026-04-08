@@ -1,91 +1,104 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { parseAttribution, captureAttribution, getFirstTouch, getLastTouch } from "./attribution";
+import {
+  captureAttribution,
+  currentClickIds,
+  currentUtm,
+  getFirstTouch,
+  getLastTouch,
+  parseClickIds,
+  parseUtm,
+} from "./attribution";
 
 beforeEach(() => {
   localStorage.clear();
 });
 
-describe("parseAttribution", () => {
-  it("parses utm params", () => {
-    const attr = parseAttribution("?utm_source=google&utm_medium=cpc&utm_campaign=blackfriday");
-    expect(attr).toMatchObject({
-      utm_source: "google",
-      utm_medium: "cpc",
-      utm_campaign: "blackfriday",
+describe("parseUtm", () => {
+  it("parses all utm_* params", () => {
+    const utm = parseUtm("?utm_source=google&utm_medium=cpc&utm_campaign=black&utm_term=x&utm_content=y");
+    expect(utm).toEqual({
+      source: "google",
+      medium: "cpc",
+      campaign: "black",
+      term: "x",
+      content: "y",
     });
   });
 
-  it("parses Google Ads gclid", () => {
-    const attr = parseAttribution("?gclid=abc123&utm_source=google&utm_medium=cpc");
-    expect(attr.gclid).toBe("abc123");
-    expect(attr.utm_source).toBe("google");
-  });
-
-  it("parses Meta fbclid", () => {
-    const attr = parseAttribution("?fbclid=fb_abc&utm_source=facebook&utm_medium=paid");
-    expect(attr.fbclid).toBe("fb_abc");
-    expect(attr.utm_source).toBe("facebook");
-  });
-
-  it("parses TikTok ttclid", () => {
-    const attr = parseAttribution("?ttclid=tt123&utm_source=tiktok");
-    expect(attr.ttclid).toBe("tt123");
-  });
-
-  it("parses Microsoft Ads msclkid", () => {
-    const attr = parseAttribution("?msclkid=ms123&utm_source=bing");
-    expect(attr.msclkid).toBe("ms123");
-  });
-
-  it("parses ref param", () => {
-    const attr = parseAttribution("?ref=newsletter");
-    expect(attr.ref).toBe("newsletter");
-  });
-
-  it("returns empty object for URLs without attribution params", () => {
-    const attr = parseAttribution("?foo=bar&baz=qux");
-    expect(Object.keys(attr)).toHaveLength(0);
+  it("returns empty when no UTMs", () => {
+    expect(parseUtm("?page=1")).toEqual({});
   });
 });
 
-describe("captureAttribution / first-touch / last-touch", () => {
-  it("persists first-touch on first visit", () => {
-    captureAttribution("https://example.com/lp?utm_source=google&utm_medium=cpc");
+describe("parseClickIds", () => {
+  const platforms: Array<[string, string, string]> = [
+    ["Google Ads", "gclid", "gc-abc"],
+    ["Google Ads iOS web", "gbraid", "gb-abc"],
+    ["Google Ads iOS app-to-web", "wbraid", "wb-abc"],
+    ["Meta/Facebook", "fbclid", "fb-abc"],
+    ["Microsoft/Bing", "msclkid", "ms-abc"],
+    ["TikTok", "ttclid", "tt-abc"],
+    ["LinkedIn", "li_fat_id", "li-abc"],
+  ];
+
+  it.each(platforms)("parses %s click id (%s)", (_label, key, value) => {
+    const ids = parseClickIds(`?${key}=${value}`);
+    expect(ids[key as keyof typeof ids]).toBe(value);
+  });
+
+  it("parses multiple click ids simultaneously", () => {
+    const ids = parseClickIds("?gclid=g1&fbclid=f1&msclkid=m1&li_fat_id=l1");
+    expect(ids).toEqual({
+      gclid: "g1",
+      fbclid: "f1",
+      msclkid: "m1",
+      li_fat_id: "l1",
+    });
+  });
+
+  it("returns empty when none present", () => {
+    expect(parseClickIds("?page=1")).toEqual({});
+  });
+});
+
+describe("captureAttribution — first/last touch", () => {
+  it("persists first-touch with full shape", () => {
+    captureAttribution(
+      "https://example.com/lp?utm_source=google&gclid=abc",
+      "https://google.com",
+    );
     const ft = getFirstTouch();
     expect(ft).not.toBeNull();
-    expect(ft?.utm_source).toBe("google");
+    expect(ft?.utm.source).toBe("google");
+    expect(ft?.click_ids.gclid).toBe("abc");
+    expect(ft?.referrer).toBe("https://google.com");
+    expect(ft?.url).toBe("https://example.com/lp?utm_source=google&gclid=abc");
   });
 
-  it("preserves first-touch on subsequent visits", () => {
-    captureAttribution("https://example.com/lp?utm_source=google&utm_medium=cpc");
-    captureAttribution("https://example.com/lp?utm_source=facebook&utm_medium=paid");
-
-    const ft = getFirstTouch();
-    expect(ft?.utm_source).toBe("google");
+  it("preserves first-touch across subsequent visits", () => {
+    captureAttribution("https://example.com/?utm_source=google", "");
+    captureAttribution("https://example.com/?utm_source=facebook", "");
+    expect(getFirstTouch()?.utm.source).toBe("google");
+    expect(getLastTouch()?.utm.source).toBe("facebook");
   });
 
-  it("updates last-touch on each visit", () => {
-    captureAttribution("https://example.com/lp?utm_source=google&utm_medium=cpc");
-    captureAttribution("https://example.com/lp?utm_source=facebook&utm_medium=paid");
-
-    const lt = getLastTouch();
-    expect(lt?.utm_source).toBe("facebook");
-  });
-
-  it("does not persist if no attribution params present", () => {
-    captureAttribution("https://example.com/lp?page=1");
+  it("does not persist when URL has no attribution params", () => {
+    captureAttribution("https://example.com/?foo=bar", "");
     expect(getFirstTouch()).toBeNull();
     expect(getLastTouch()).toBeNull();
   });
 
-  it("includes url and ts in touch data", () => {
-    const before = Date.now();
-    captureAttribution("https://example.com/lp?utm_source=google");
-    const after = Date.now();
+  it("persists when only click id is present (no UTMs)", () => {
+    captureAttribution("https://example.com/?gclid=xyz", "");
+    expect(getFirstTouch()?.click_ids.gclid).toBe("xyz");
+  });
+});
 
-    const ft = getFirstTouch();
-    expect(ft?.url).toBe("https://example.com/lp?utm_source=google");
-    expect(ft?.ts).toBeGreaterThanOrEqual(before);
-    expect(ft?.ts).toBeLessThanOrEqual(after);
+describe("currentUtm / currentClickIds", () => {
+  it("reads from window.location", () => {
+    // happy-dom keeps location stable across tests; we just verify the
+    // functions read from `location.search` without throwing.
+    expect(typeof currentUtm()).toBe("object");
+    expect(typeof currentClickIds()).toBe("object");
   });
 });

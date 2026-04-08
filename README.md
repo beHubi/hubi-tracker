@@ -9,7 +9,7 @@ Drop-in JS SDK for Hubi landing pages. One script tag — captures pageviews, UT
 ## Quick start
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/seu-usuario/hubi-tracker@v1/dist/hubi-tracker.iife.js" async></script>
+<script src="https://cdn.jsdelivr.net/gh/seu-usuario/hubi-tracker@v1/dist/index.global.js" async></script>
 <script>
   window.HubiTracker = window.HubiTracker || [];
   HubiTracker.push(['init', {

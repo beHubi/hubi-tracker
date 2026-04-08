@@ -1,48 +1,51 @@
-import type { Attribution, TouchData } from "./types";
+import type { ClickIds, TouchData, Utm } from "./types";
 
-const UTM_PARAMS = [
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_term",
-  "utm_content",
+const UTM_KEYS = ["source", "medium", "campaign", "term", "content"] as const;
+
+const CLICK_ID_KEYS = [
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "fbclid",
+  "msclkid",
+  "ttclid",
+  "li_fat_id",
 ] as const;
-
-const CLICK_IDS = ["gclid", "fbclid", "ttclid", "msclkid"] as const;
 
 const FIRST_TOUCH_KEY = "hubi_ft";
 const LAST_TOUCH_KEY = "hubi_lt";
 
-export function parseAttribution(search: string): Attribution {
+export function parseUtm(search: string): Utm {
   const params = new URLSearchParams(search);
-  const attr: Attribution = {};
-
-  for (const key of UTM_PARAMS) {
-    const val = params.get(key);
-    if (val) attr[key] = val;
+  const utm: Utm = {};
+  for (const key of UTM_KEYS) {
+    const val = params.get(`utm_${key}`);
+    if (val) utm[key] = val;
   }
-
-  for (const key of CLICK_IDS) {
-    const val = params.get(key);
-    if (val) attr[key] = val;
-  }
-
-  const ref = params.get("ref");
-  if (ref) attr.ref = ref;
-
-  return attr;
+  return utm;
 }
 
-function hasAttribution(attr: Attribution): boolean {
-  return Object.keys(attr).length > 0;
+export function parseClickIds(search: string): ClickIds {
+  const params = new URLSearchParams(search);
+  const ids: ClickIds = {};
+  for (const key of CLICK_ID_KEYS) {
+    const val = params.get(key);
+    if (val) ids[key] = val;
+  }
+  return ids;
 }
 
-export function captureAttribution(url: string): void {
+function hasData(utm: Utm, clickIds: ClickIds): boolean {
+  return Object.keys(utm).length > 0 || Object.keys(clickIds).length > 0;
+}
+
+export function captureAttribution(url: string, referrer: string): void {
   const { search } = new URL(url);
-  const attr = parseAttribution(search);
-  if (!hasAttribution(attr)) return;
+  const utm = parseUtm(search);
+  const click_ids = parseClickIds(search);
+  if (!hasData(utm, click_ids)) return;
 
-  const touch: TouchData = { ...attr, url, ts: Date.now() };
+  const touch: TouchData = { url, referrer, utm, click_ids, ts: Date.now() };
 
   try {
     if (!localStorage.getItem(FIRST_TOUCH_KEY)) {
@@ -50,7 +53,7 @@ export function captureAttribution(url: string): void {
     }
     localStorage.setItem(LAST_TOUCH_KEY, JSON.stringify(touch));
   } catch {
-    // localStorage unavailable
+    // localStorage unavailable — degrade silently
   }
 }
 
@@ -70,4 +73,13 @@ export function getLastTouch(): TouchData | null {
   } catch {
     return null;
   }
+}
+
+// Current-page UTMs and click IDs (not stored — read per-event).
+export function currentUtm(): Utm {
+  return parseUtm(location.search);
+}
+
+export function currentClickIds(): ClickIds {
+  return parseClickIds(location.search);
 }

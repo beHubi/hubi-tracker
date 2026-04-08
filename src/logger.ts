@@ -1,29 +1,42 @@
 let _debug = false;
 
-const PREFIX = "%c[hubi]%c";
-const STYLE_LABEL = "color:#6366f1;font-weight:bold";
-const STYLE_RESET = "color:inherit;font-weight:normal";
+const LABEL = "[hubi]";
+const STYLE = "color:#6366f1;font-weight:bold";
+const RESET = "color:inherit;font-weight:normal";
 
 export function enableDebug(): void {
   _debug = true;
 }
 
+export function isDebug(): boolean {
+  return _debug;
+}
+
 export function log(message: string, ...data: unknown[]): void {
   if (!_debug) return;
   // eslint-disable-next-line no-console
-  console.log(`${PREFIX} ${message}`, STYLE_LABEL, STYLE_RESET, ...data);
+  console.log(`%c${LABEL}%c ${message}`, STYLE, RESET, ...data);
 }
 
 export function group(label: string, fn: () => void): void {
   if (!_debug) return;
   // eslint-disable-next-line no-console
-  console.groupCollapsed(`${PREFIX} ${label}`, STYLE_LABEL, STYLE_RESET);
-  fn();
-  // eslint-disable-next-line no-console
-  console.groupEnd();
+  console.groupCollapsed(`%c${LABEL}%c ${label}`, STYLE, RESET);
+  try {
+    fn();
+  } finally {
+    // eslint-disable-next-line no-console
+    console.groupEnd();
+  }
+}
+
+// Pads a string to a fixed width for console table alignment.
+export function pad(str: string, width: number): string {
+  if (str.length >= width) return str;
+  return str + " ".repeat(width - str.length);
 }
 
 export function warn(message: string, ...data: unknown[]): void {
   // eslint-disable-next-line no-console
-  console.warn(`${PREFIX} ${message}`, STYLE_LABEL, STYLE_RESET, ...data);
+  console.warn(`${LABEL} ${message}`, ...data);
 }
