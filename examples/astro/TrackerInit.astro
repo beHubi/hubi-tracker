@@ -1,0 +1,23 @@
+---
+// TrackerInit.astro — drop this into your <head>
+// Props allow per-page overrides; defaults come from env vars.
+interface Props {
+  site?: string;
+}
+
+const { site = import.meta.env.PUBLIC_HUBI_SITE } = Astro.props;
+const publicKey = import.meta.env.PUBLIC_HUBI_KEY;
+const apiBase = import.meta.env.PUBLIC_HUBI_API_BASE ?? 'https://app.hubi.com.br/api/public/v1';
+---
+
+<script src="https://cdn.hubi.com.br/tracker/v1.js" async is:inline></script>
+<script define:vars={{ publicKey, site, apiBase }}>
+  window.HubiTracker = window.HubiTracker || [];
+  HubiTracker.push(['init', {
+    publicKey,
+    site,
+    apiBase,
+    autoBindForms: true,
+    consent: { marketing: true, analytics: true },
+  }]);
+</script>

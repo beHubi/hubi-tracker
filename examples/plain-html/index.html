@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hubi Tracker — Exemplo HTML</title>
+</head>
+<body>
+  <h1>Exemplo de uso — HTML puro</h1>
+
+  <!-- 1. Snippet de carregamento assíncrono -->
+  <script src="../../dist/hubi-tracker.iife.js"></script>
+  <script>
+    window.HubiTracker = window.HubiTracker || [];
+    HubiTracker.push(['init', {
+      publicKey: 'hubi_pk_example',
+      site: 'lp-exemplo-2026',
+      apiBase: 'https://app.hubi.com.br/api/public/v1',
+      autoBindForms: false,
+      consent: { marketing: true, analytics: true }
+    }]);
+  </script>
+
+  <!-- 2. Formulário com bind manual -->
+  <form id="contact-form">
+    <input type="text" name="nome" placeholder="Seu nome" />
+    <input type="email" name="email" placeholder="Seu e-mail" />
+    <input type="tel" name="telefone" placeholder="WhatsApp" />
+    <input type="text" name="empresa" placeholder="Empresa" />
+    <button type="submit">Falar com consultor</button>
+  </form>
+
+  <script>
+    const form = document.getElementById('contact-form');
+    Hubi.bindForm(form, { formId: 'contact' });
+  </script>
+</body>
+</html>
