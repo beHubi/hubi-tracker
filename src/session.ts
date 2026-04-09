@@ -13,41 +13,45 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-export function getSessionId(): string {
-  const now = Date.now();
-
+function readEntry(): SessionEntry | null {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
-    if (raw) {
-      const entry: SessionEntry = JSON.parse(raw);
-      if (now - entry.last_active < IDLE_TTL) {
-        entry.last_active = now;
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify(entry));
-        return entry.id;
-      }
-    }
+    return raw ? (JSON.parse(raw) as SessionEntry) : null;
   } catch {
-    // sessionStorage unavailable — fall through
+    return null;
   }
+}
 
-  const entry: SessionEntry = { id: generateId(), last_active: now };
+function writeEntry(entry: SessionEntry): void {
   try {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(entry));
   } catch {
-    // ignore
+    // ignore — storage unavailable
   }
+}
+
+function isFresh(entry: SessionEntry, now: number): boolean {
+  return now - entry.last_active < IDLE_TTL;
+}
+
+export function getSessionId(): string {
+  const now = Date.now();
+  const existing = readEntry();
+
+  if (existing && isFresh(existing, now)) {
+    existing.last_active = now;
+    writeEntry(existing);
+    return existing.id;
+  }
+
+  const entry: SessionEntry = { id: generateId(), last_active: now };
+  writeEntry(entry);
   return entry.id;
 }
 
 export function touchSession(): void {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (raw) {
-      const entry: SessionEntry = JSON.parse(raw);
-      entry.last_active = Date.now();
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(entry));
-    }
-  } catch {
-    // ignore
-  }
+  const entry = readEntry();
+  if (!entry) return;
+  entry.last_active = Date.now();
+  writeEntry(entry);
 }

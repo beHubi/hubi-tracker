@@ -104,7 +104,6 @@ export interface LeadFields {
 export interface LeadPayload {
   form_id: string;
   external_id: string;
-  event_id: string;
   hubi_hp: string;
   fields: LeadFields;
   extra: Record<string, string>;

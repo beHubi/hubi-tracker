@@ -139,4 +139,20 @@ describe("send — offline + failure fallback", () => {
     const ok = await sendLead(makeLead());
     expect(ok).toBe(false);
   });
+
+  it("does not enqueue on 4xx (non-retryable)", async () => {
+    vi.stubGlobal("navigator", { onLine: true });
+    const f = vi.fn().mockResolvedValue({ ok: false, status: 422 });
+    vi.stubGlobal("fetch", f);
+    initApi("https://api.test/v1", "pk_x");
+
+    const ok = await sendLead(makeLead());
+    expect(ok).toBe(false);
+
+    // If enqueue had run, "online" event would drain and call fetch again.
+    f.mockClear();
+    window.dispatchEvent(new Event("online"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(f).not.toHaveBeenCalled();
+  });
 });
