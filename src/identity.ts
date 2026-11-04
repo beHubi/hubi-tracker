@@ -38,8 +38,7 @@ export function clearIdentifiedEmail(): void {
 }
 
 // Landing URL — the very first URL the visitor ever opened on this property,
-// regardless of whether it had attribution params. Distinct from first-touch
-// (which only fires if UTMs/click-IDs are present).
+// regardless of whether it had attribution params.
 export function ensureLandingUrl(currentUrl: string): string {
   try {
     const stored = localStorage.getItem(LANDING_KEY);

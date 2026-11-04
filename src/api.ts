@@ -1,4 +1,4 @@
-import type { LeadPayload, PageviewPayload, QueueKind, QueuedEvent, TrackerPayload } from "./types";
+import type { LeadPayload, QueuedEvent } from "./types";
 import { warn } from "./logger";
 
 const DB_NAME = "hubi_queue";
@@ -9,7 +9,7 @@ const BACKOFF_BASE = 1000;
 const MAX_QUEUE_SIZE = 200;
 
 const LEADS_PATH = "/leads";
-const PAGEVIEW_PATH = "/events/pageview";
+const LEAD_KIND = "lead";
 
 // Thrown when the server returns a non-retryable response (4xx client error).
 // These are caller problems (bad key, payload, consent) — retrying won't help.
@@ -36,40 +36,34 @@ export function initApi(apiBase: string, publicKey: string): void {
   }
 }
 
-export function pathFor(kind: QueueKind): string {
-  return kind === "lead" ? LEADS_PATH : PAGEVIEW_PATH;
+// Only leads are sent. Entries of any other kind ("pageview", queued by
+// SDK 1.0 before pageviews were dropped) are discarded instead of posted.
+export function isSendable(entry: QueuedEvent): boolean {
+  return entry.kind === LEAD_KIND;
 }
 
 // ---------------------------------------------------------------------------
 // Public send
 // ---------------------------------------------------------------------------
 
-export async function sendPageview(payload: PageviewPayload): Promise<boolean> {
-  return send("pageview", payload);
-}
-
 export async function sendLead(payload: LeadPayload): Promise<boolean> {
-  return send("lead", payload);
-}
-
-function isOffline(): boolean {
-  return typeof navigator !== "undefined" && !navigator.onLine;
-}
-
-async function send(kind: QueueKind, payload: TrackerPayload): Promise<boolean> {
   if (isOffline()) {
-    await enqueue(kind, payload);
+    await enqueue(payload);
     return false;
   }
 
   try {
-    await post(kind, payload);
+    await post(payload);
     return true;
   } catch (error) {
     if (error instanceof NonRetryableError) return false;
-    await enqueue(kind, payload);
+    await enqueue(payload);
     return false;
   }
+}
+
+function isOffline(): boolean {
+  return typeof navigator !== "undefined" && !navigator.onLine;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,8 +90,8 @@ function errorForStatus(status: number): Error {
   return new Error(`hubi-tracker: HTTP ${status}`);
 }
 
-async function post(kind: QueueKind, payload: TrackerPayload): Promise<void> {
-  const res = await fetch(`${_apiBase}${pathFor(kind)}`, {
+async function post(payload: LeadPayload): Promise<void> {
+  const res = await fetch(`${_apiBase}${LEADS_PATH}`, {
     method: "POST",
     mode: "cors",
     credentials: "omit",
@@ -185,12 +179,12 @@ function deleteEntry(id: number): Promise<void> {
 // Enqueue + drain
 // ---------------------------------------------------------------------------
 
-async function enqueue(kind: QueueKind, payload: TrackerPayload): Promise<void> {
+async function enqueue(payload: LeadPayload): Promise<void> {
   await openDb();
   if (!_db) return;
 
   await trimQueue();
-  await putEntry({ kind, payload, attempts: 0, queued_at: Date.now() });
+  await putEntry({ kind: LEAD_KIND, payload, attempts: 0, queued_at: Date.now() });
 }
 
 // Drops oldest entries to keep the queue bounded. Prevents pathological
@@ -214,8 +208,13 @@ async function handleDrainFailure(id: number, entry: QueuedEvent): Promise<void>
 }
 
 async function drainEntry({ id, entry }: Entry): Promise<void> {
+  if (!isSendable(entry)) {
+    await deleteEntry(id);
+    return;
+  }
+
   try {
-    await post(entry.kind, entry.payload);
+    await post(entry.payload);
     await deleteEntry(id);
   } catch (error) {
     if (error instanceof NonRetryableError) {

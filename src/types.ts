@@ -28,67 +28,15 @@ export interface Utm {
   content?: string;
 }
 
-export interface ClickIds {
-  gclid?: string;
-  gbraid?: string;
-  wbraid?: string;
-  fbclid?: string;
-  msclkid?: string;
-  ttclid?: string;
-  li_fat_id?: string;
-}
-
-export interface AdCookies {
-  fbp?: string;
-  fbc?: string;
-  ga_client_id?: string;
-  ttp?: string;
-}
-
-export interface TouchData {
-  url: string;
-  referrer: string;
-  utm: Utm;
-  click_ids: ClickIds;
-  ts: number;
-}
-
 // ---------------------------------------------------------------------------
-// Device + context
+// Lead payload (matches hubi-web Marketing::Leads::Ingest)
 // ---------------------------------------------------------------------------
 
-export interface DeviceInfo {
-  type: "mobile" | "tablet" | "desktop";
-  ua: string;
-  language: string;
-  timezone: string;
-  screen: string;
-  viewport: string;
-}
-
-export interface EventContext {
-  anonymous_id: string;
-  session_id: string;
-  page_url: string;
-  page_title: string;
+export interface LeadContext {
   landing_url: string;
   referrer_url: string;
-  consent: ConsentState;
-  device: DeviceInfo;
   utm: Utm;
-  click_ids: ClickIds;
-  ad_cookies: AdCookies;
-  first_touch: TouchData | null;
-  last_touch: TouchData | null;
-  ts: number;
-}
-
-// ---------------------------------------------------------------------------
-// Payload shapes (match hubi-web Marketing::Leads::Ingest + IngestPageview)
-// ---------------------------------------------------------------------------
-
-export interface PageviewPayload {
-  context: EventContext;
+  consent: ConsentState;
 }
 
 export interface LeadFields {
@@ -107,10 +55,8 @@ export interface LeadPayload {
   hubi_hp: string;
   fields: LeadFields;
   extra: Record<string, string>;
-  context: EventContext;
+  context: LeadContext;
 }
-
-export type TrackerPayload = PageviewPayload | LeadPayload;
 
 // ---------------------------------------------------------------------------
 // Forms
@@ -132,11 +78,11 @@ export interface SubmitOptions {
 // Queue
 // ---------------------------------------------------------------------------
 
-export type QueueKind = "pageview" | "lead";
-
+// `kind` is a plain string: queues written by SDK 1.0 may still hold
+// "pageview" entries, which the drain discards.
 export interface QueuedEvent {
-  kind: QueueKind;
-  payload: TrackerPayload;
+  kind: string;
+  payload: LeadPayload;
   attempts: number;
   queued_at: number;
 }

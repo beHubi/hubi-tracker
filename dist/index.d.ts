@@ -40,7 +40,6 @@ declare function extractFields(form: HTMLFormElement, customMap?: FieldMap): Ext
 
 declare const Hubi: {
     init(opts: InitOptions): void;
-    pageview(url?: string): void;
     identify(email: string): void;
     clearIdentity(): void;
     bindForm(el: HTMLFormElement, options?: BindFormOptions): void;

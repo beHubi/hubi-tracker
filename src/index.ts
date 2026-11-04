@@ -1,24 +1,15 @@
 import type {
   BindFormOptions,
   ConsentState,
-  EventContext,
   InitOptions,
+  LeadContext,
   LeadFields,
   LeadPayload,
-  PageviewPayload,
   SubmitOptions,
 } from "./types";
-import { initApi, sendLead, sendPageview } from "./api";
-import {
-  captureAttribution,
-  currentClickIds,
-  currentUtm,
-  getFirstTouch,
-  getLastTouch,
-} from "./attribution";
-import { ensureFbc, readAdCookies } from "./cookies";
+import { initApi, sendLead } from "./api";
+import { currentUtm } from "./attribution";
 import { getConsent, initConsent, setConsent as storeConsent } from "./consent";
-import { collectDevice } from "./device";
 import {
   CANONICAL_FIELDS,
   autoBindForms,
@@ -34,9 +25,6 @@ import {
   uuid,
 } from "./identity";
 import { enableDebug, log, warn } from "./logger";
-import { currentReferrer, initPageviewTracking, primeReferrer } from "./pageview";
-import { getSessionId, touchSession } from "./session";
-import { getAnonymousId } from "./visitor";
 
 const CANONICAL_SET = new Set<string>(CANONICAL_FIELDS);
 
@@ -44,47 +32,19 @@ const CANONICAL_SET = new Set<string>(CANONICAL_FIELDS);
 // State
 // ---------------------------------------------------------------------------
 
-let _anonymousId = "";
 let _initialized = false;
 
 // ---------------------------------------------------------------------------
-// Context builder — the heart of every payload
+// Lead context — only what hubi-web keeps from a lead
 // ---------------------------------------------------------------------------
 
-function buildAttributionContext() {
-  const utm = currentUtm();
-  const click_ids = currentClickIds();
-  const ad_cookies = ensureFbc(click_ids, readAdCookies());
-  return { utm, click_ids, ad_cookies };
-}
-
-function buildContext(): EventContext {
-  touchSession();
-  const url = location.href;
-  const attribution = buildAttributionContext();
-
+function buildContext(): LeadContext {
   return {
-    anonymous_id: _anonymousId,
-    session_id: getSessionId(),
-    page_url: url,
-    page_title: document.title || "",
-    landing_url: ensureLandingUrl(url),
-    referrer_url: currentReferrer(),
+    landing_url: ensureLandingUrl(location.href),
+    referrer_url: document.referrer || "",
+    utm: currentUtm(),
     consent: getConsent(),
-    device: collectDevice(),
-    ...attribution,
-    first_touch: getFirstTouch(),
-    last_touch: getLastTouch(),
-    ts: Date.now(),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Consent enforcement
-// ---------------------------------------------------------------------------
-
-function analyticsAllowed(): boolean {
-  return getConsent().analytics === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,22 +88,8 @@ async function handleFormSubmit(result: ExtractedFields, formId: string): Promis
 }
 
 // ---------------------------------------------------------------------------
-// Init helpers
+// Submit helpers
 // ---------------------------------------------------------------------------
-
-function primeAttribution(): void {
-  const referrer = document.referrer || "";
-  primeReferrer(referrer);
-  captureAttribution(location.href, referrer);
-  ensureLandingUrl(location.href);
-}
-
-function startSpaTracking(): void {
-  initPageviewTracking((url) => {
-    captureAttribution(url, currentReferrer());
-    Hubi.pageview(url);
-  });
-}
 
 function partitionSubmitFields(input: Record<string, string>): ExtractedFields {
   const fields: LeadFields = {};
@@ -168,34 +114,13 @@ export const Hubi = {
 
     if (opts.debug) enableDebug();
     initConsent(opts.consent);
-    _anonymousId = getAnonymousId();
-
-    primeAttribution();
+    ensureLandingUrl(location.href);
     initApi(opts.apiBase, opts.publicKey);
     _initialized = true;
 
-    log("init", {
-      site: opts.site,
-      anonymous_id: _anonymousId,
-      consent: getConsent(),
-      first_touch: getFirstTouch(),
-    });
-
-    Hubi.pageview();
-    startSpaTracking();
+    log("init", { site: opts.site, consent: getConsent() });
 
     if (opts.autoBindForms) autoBindForms(handleFormSubmit);
-  },
-
-  pageview(url?: string): void {
-    if (!_initialized) return warn("pageview ignored — Hubi.init() was not called");
-    if (!analyticsAllowed()) return log("pageview blocked — analytics consent not granted");
-
-    const payload: PageviewPayload = { context: buildContext() };
-    if (url) payload.context.page_url = url;
-
-    log("pageview →", url ?? location.href);
-    sendPageview(payload);
   },
 
   identify(email: string): void {
@@ -234,7 +159,9 @@ type CommandTuple = [string, ...unknown[]];
 
 const COMMAND_HANDLERS: Record<string, (args: unknown[]) => void> = {
   init: (args) => Hubi.init(args[0] as InitOptions),
-  pageview: (args) => Hubi.pageview(args[0] as string | undefined),
+  // Pageviews are no longer sent (hubi-web dropped visitor tracking). Kept as
+  // a no-op so snippets that still push ['pageview'] don't warn.
+  pageview: () => {},
   identify: (args) => Hubi.identify(args[0] as string),
   setConsent: (args) => Hubi.setConsent(args[0] as Partial<ConsentState>),
   clearIdentity: () => Hubi.clearIdentity(),
