@@ -1,12 +1,12 @@
 # ADR: Marketing API Authentication — Browser vs Server-to-Server
 
 **Status:** Accepted
-**Date:** 2026-04-08 (revised)
+**Date:** 2026-04-08 (revised; 2026-11: pageviews removed, the SDK sends only leads)
 **Context:** Issue #08 (API security — shipped), #21 (API browser auth mode — proposed), #09 (hubi-tracker SDK)
 
 ## Context
 
-The Public Leads API (`POST /api/public/v1/leads` and `POST /api/public/v1/events/pageview`) must be callable from:
+The Public Leads API (`POST /api/public/v1/leads`; `POST /api/public/v1/events/pageview` until it was removed in November 2026) must be callable from:
 
 1. **Browser JS SDK** (`hubi-tracker`) — runs on landing pages, no secrets available.
 2. **Server-to-server** — trusted backend integrations (e.g., CRMs, Zapier, internal services).
@@ -25,11 +25,11 @@ We authenticate browser and server flows **on the same endpoints** but with **di
 - `X-Hubi-Timestamp` — 5-minute window; prevents clock-skew abuse.
 - `Origin` header — validated against `token.allowed_origins` (cannot be forged by non-browser clients; browsers send it automatically and won't let JS override it).
 - Rate limits (600/min per IP, 60/min per public key, 5/min per IP+form_id for leads).
-- Body size cap (16 KB leads / 4 KB pageview).
+- Body size cap (16 KB leads).
 - Honeypot field (`hubi_hp`) checked by `Marketing::Leads::Ingest`.
 - HMAC and nonce checks are **skipped** in browser mode.
 
-**Scope:** only the whitelisted POST routes (`/leads` and `/events/pageview`). Any other route still requires HMAC.
+**Scope:** only the whitelisted POST route (`/leads`). Any other route still requires HMAC.
 
 ### Server mode (default)
 **Trigger:** any request that isn't in browser mode (no matching Origin, missing Origin, or non-whitelisted route).

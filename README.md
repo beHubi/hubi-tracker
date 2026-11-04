@@ -1,8 +1,10 @@
 # hubi-tracker
 
-Drop-in JS SDK for Hubi landing pages. One script tag — captures pageviews, UTM attribution, and leads from any HTML form.
+Drop-in JS SDK for Hubi landing pages. One script tag — sends the leads from any HTML form to Hubi, with where they came from (landing page, referrer, UTMs).
 
-**~5.5 KB gzip · zero dependencies · works with any framework**
+It does not track visitors: no pageviews, no visitor or session ids, no device data, no click ids or ad cookies.
+
+**~4.4 KB gzip · zero dependencies · works with any framework**
 
 ---
 
@@ -28,12 +30,14 @@ The second `<script>` block can run **before** the SDK loads — queued commands
 
 ## What happens on `init`
 
-1. Creates (or reads) an `anonymous_id` cookie — stable for 1 year.
-2. Parses UTMs and click IDs (`gclid`, `gbraid`, `wbraid`, `fbclid`, `msclkid`, `ttclid`, `li_fat_id`) from the URL.
-3. Persists **first-touch** (never overwritten) and **last-touch** (updated every visit) in `localStorage`.
-4. Sends a `pageview` event (only if `analytics` consent is granted — see [Consent](#consent)).
-5. Hooks `history.pushState` / `popstate` for SPA pageview tracking.
-6. Binds forms if `autoBindForms: true` (see below).
+1. Loads consent (see [Consent](#consent)).
+2. Stores the landing URL — the first URL the visitor opened on this property — in `localStorage`, once.
+3. Sends any lead left in the offline queue (see [Offline resilience](#offline-resilience)).
+4. Binds forms if `autoBindForms: true` (see below).
+
+Nothing is sent on `init`: the SDK only posts when a form is submitted.
+
+> Pageviews were dropped in 1.1.0. `HubiTracker.push(['pageview'])` is still accepted and does nothing, so old snippets keep working; `Hubi.pageview()` no longer exists.
 
 ---
 
@@ -98,7 +102,7 @@ The SDK maps form field names to canonical fields automatically, stripping accen
 
 Fields that don't match any variant are forwarded inside `extra` (see [Payload shape](#payload-shape)).
 
-> **Note:** `name`, `email`, `phone`, `company` and `job_title` currently land in dedicated columns on the `leads` table in hubi-web. `message` and `mql_question` are sent but stored only inside `raw_payload` — they're visible on the lead detail page (JSON view) and will get dedicated columns in a future release.
+> **Note:** hubi-web keeps `name`, `email`, `phone`, `company` and `job_title` from `fields`. `message` and `mql_question` are sent in `fields` too, but hubi-web doesn't store them today.
 
 ### Force a mapping with `data-hubi-field`
 
@@ -141,21 +145,20 @@ Every lead POST looks like this:
     "qualquer_campo_custom": "valor"
   },
   "context": {
-    "anonymous_id": "...",
-    "session_id": "...",
-    "page_url": "...",
-    "landing_url": "...",
-    "referrer_url": "...",
+    "landing_url": "https://lp.acme.com/bf26?utm_source=google",
+    "referrer_url": "https://www.google.com/",
     "utm": { "source": "google", "medium": "cpc", "campaign": "bf26" },
-    "click_ids": { "gclid": "..." },
-    "ad_cookies": { "fbp": "...", "fbc": "..." },
-    "device": { "type": "mobile", "ua": "...", "timezone": "America/Sao_Paulo" },
-    "consent": { "marketing": true, "analytics": true },
-    "first_touch": { ... },
-    "last_touch": { ... }
+    "consent": { "marketing": true, "analytics": true }
   }
 }
 ```
+
+- `landing_url` — the first URL this visitor opened on the property (stored once in `localStorage`).
+- `referrer_url` — `document.referrer` of the page the form was sent from.
+- `utm` — the `utm_source`, `utm_medium`, `utm_campaign`, `utm_content` and `utm_term` of the page the form was sent from.
+- `consent` — the current [consent](#consent) state.
+
+SDK 1.0 also sent `anonymous_id`, `session_id`, `page_url`, `page_title`, `device`, `click_ids`, `ad_cookies`, `first_touch`, `last_touch` and `ts`; hubi-web ignores them, so pages still on 1.0 keep working.
 
 `hubi_hp` is the honeypot field — the SDK injects a hidden `input[name="hubi_hp"]` on every bound form. If a bot fills it, the API silently discards the submission.
 
@@ -163,12 +166,12 @@ Every lead POST looks like this:
 
 ## Consent
 
-The SDK ships with LGPD-friendly defaults: **nothing is tracked until consent is explicitly granted**.
+The SDK keeps the visitor's consent and sends it with every lead. Both flags default to `false`.
 
 ```ts
 interface ConsentState {
-  marketing: boolean;  // required to send leads
-  analytics: boolean;  // required to send pageviews
+  marketing: boolean;  // sites that require consent reject leads without it
+  analytics: boolean;  // sent with the lead
 }
 ```
 
@@ -177,7 +180,7 @@ interface ConsentState {
 - `Hubi.getConsent()` reads the current state.
 - State is persisted in `localStorage` under `hubi_consent`.
 
-Until `analytics` is granted, `pageview` events are dropped client-side. Until `marketing` is granted, the Hubi API will reject `lead` POSTs for sites configured to require consent (returns `422 { error: "consent_required" }`).
+Until `marketing` is granted, the Hubi API will reject `lead` POSTs for sites configured to require consent (returns `422 { error: "consent_required" }`).
 
 ---
 
@@ -208,7 +211,7 @@ HubiTracker.push(['init', {
 
 **On init:**
 ```
-[hubi] init { site: "my-lp", anonymous_id: "uuid...", consent: { marketing: true, analytics: true }, first_touch: null }
+[hubi] init { site: "my-lp", consent: { marketing: true, analytics: true } }
 ```
 
 **When a form is bound:**
@@ -221,11 +224,6 @@ HubiTracker.push(['init', {
     numero_funcionarios →  "numero_funcion..." (extra — passthrough)
 ```
 
-**On pageview:**
-```
-[hubi] pageview → https://example.com/lp
-```
-
 **On submit:**
 ```
 [hubi] lead → { formId: "contact", fields: { name, email, phone }, extra: { ... } }
@@ -233,7 +231,7 @@ HubiTracker.push(['init', {
 
 If you forgot to call `init`, every command warns you:
 ```
-[hubi] pageview ignored — Hubi.init() was not called
+[hubi] identify ignored — Hubi.init() was not called
 ```
 
 ---
@@ -242,7 +240,6 @@ If you forgot to call `init`, every command warns you:
 
 ```ts
 Hubi.init(opts: InitOptions): void
-Hubi.pageview(url?: string): void
 Hubi.identify(email: string): void             // late-binding after opt-in
 Hubi.clearIdentity(): void
 Hubi.bindForm(el, { fieldMap?, formId? }): void
@@ -258,16 +255,17 @@ Types are shipped alongside the bundle — IDE autocomplete works out of the box
 
 ## Offline resilience
 
-Events are queued in **IndexedDB** when the browser is offline (or when the request fails due to a network error / 5xx). The queue is drained automatically on:
+Leads are queued in **IndexedDB** when the browser is offline (or when the request fails due to a network error / 5xx). The queue is drained automatically on:
 
 - `online` event (browser reconnects)
 - Next successful `init()` on a subsequent page load
 
 Retry policy:
 
-- Up to **5 attempts** per event, with exponential backoff (1s, 2s, 4s, 8s, 16s).
-- **4xx responses are NOT retried** — they indicate a caller problem (invalid public key, malformed payload, consent rejection). The event is dropped.
-- Queue is capped at **200 events** — older entries are evicted on overflow to prevent IndexedDB growth.
+- Up to **5 attempts** per lead, with exponential backoff (1s, 2s, 4s, 8s, 16s).
+- **4xx responses are NOT retried** — they indicate a caller problem (invalid public key, malformed payload, consent rejection). The lead is dropped.
+- Queue is capped at **200 leads** — older entries are evicted on overflow to prevent IndexedDB growth.
+- Pageviews left in the queue by SDK 1.0 are discarded, not sent.
 
 ---
 
@@ -285,7 +283,7 @@ Server-to-server integrations use HMAC-SHA256 signing. See [`docs/adr/marketing-
 
 ```bash
 npm install
-npm test          # Vitest (94 tests)
+npm test          # Vitest
 npm run build     # tsup → ESM + CJS + IIFE + d.ts
 npm run size      # gzip size of IIFE bundle
 npm run typecheck # TypeScript strict check
