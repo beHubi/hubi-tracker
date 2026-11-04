@@ -1,30 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { initApi, pathFor, sendLead, sendPageview } from "./api";
-import type { EventContext, LeadPayload, PageviewPayload } from "./types";
+import { initApi, isSendable, sendLead } from "./api";
+import type { LeadContext, LeadPayload, QueuedEvent } from "./types";
 
-function makeContext(): EventContext {
+function makeContext(): LeadContext {
   return {
-    anonymous_id: "anon-123",
-    session_id: "sess-456",
-    page_url: "https://example.com/lp",
-    page_title: "LP",
     landing_url: "https://example.com/lp",
-    referrer_url: "",
-    consent: { marketing: true, analytics: true },
-    device: {
-      type: "desktop",
-      ua: "test-ua",
-      language: "pt-BR",
-      timezone: "America/Sao_Paulo",
-      screen: "1920x1080",
-      viewport: "1280x720",
-    },
+    referrer_url: "https://google.com/",
     utm: { source: "google", medium: "cpc" },
-    click_ids: { gclid: "abc" },
-    ad_cookies: { fbp: "fb.1.123.456" },
-    first_touch: null,
-    last_touch: null,
-    ts: 1700000000000,
+    consent: { marketing: true, analytics: true },
   };
 }
 
@@ -32,7 +15,6 @@ function makeLead(): LeadPayload {
   return {
     form_id: "contact",
     external_id: "ext-uuid",
-    event_id: "evt-uuid",
     hubi_hp: "",
     fields: { name: "João", email: "joao@example.com" },
     extra: {},
@@ -40,21 +22,21 @@ function makeLead(): LeadPayload {
   };
 }
 
-function makePageview(): PageviewPayload {
-  return { context: makeContext() };
+function makeQueued(kind: string): QueuedEvent {
+  return { kind, payload: makeLead(), attempts: 0, queued_at: 1700000000000 };
 }
 
-describe("pathFor — endpoint routing", () => {
-  it("routes leads to /leads", () => {
-    expect(pathFor("lead")).toBe("/leads");
+describe("isSendable — queued entries", () => {
+  it("sends queued leads", () => {
+    expect(isSendable(makeQueued("lead"))).toBe(true);
   });
 
-  it("routes pageviews to /events/pageview", () => {
-    expect(pathFor("pageview")).toBe("/events/pageview");
+  it("discards pageviews queued by SDK 1.0", () => {
+    expect(isSendable(makeQueued("pageview"))).toBe(false);
   });
 });
 
-describe("sendPageview + sendLead — HTTP shape", () => {
+describe("sendLead — HTTP shape", () => {
   beforeEach(() => {
     vi.stubGlobal("navigator", { onLine: true });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201 }));
@@ -65,47 +47,30 @@ describe("sendPageview + sendLead — HTTP shape", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts pageview to /events/pageview with public key + timestamp headers", async () => {
-    await sendPageview(makePageview());
+  it("posts lead to /leads with public key + timestamp headers", async () => {
+    await sendLead(makeLead());
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://app.hubi.com.br/api/public/v1/events/pageview");
+    expect(url).toBe("https://app.hubi.com.br/api/public/v1/leads");
     expect(init.method).toBe("POST");
     expect(init.headers["Content-Type"]).toBe("application/json");
     expect(init.headers["X-Hubi-Public-Key"]).toBe("hubi_pk_test");
     expect(init.headers["X-Hubi-Timestamp"]).toMatch(/^\d+$/);
   });
 
-  it("posts lead to /leads with full payload shape", async () => {
+  it("posts the lead payload as is", async () => {
     await sendLead(makeLead());
 
-    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://app.hubi.com.br/api/public/v1/leads");
-
-    const body = JSON.parse(init.body);
-    expect(body).toMatchObject({
-      form_id: "contact",
-      external_id: "ext-uuid",
-      event_id: "evt-uuid",
-      hubi_hp: "",
-      fields: { name: "João", email: "joao@example.com" },
-      context: {
-        anonymous_id: "anon-123",
-        session_id: "sess-456",
-        consent: { marketing: true, analytics: true },
-        device: expect.any(Object),
-        utm: { source: "google", medium: "cpc" },
-        click_ids: { gclid: "abc" },
-      },
-    });
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual(makeLead());
   });
 
   it("strips trailing slashes from apiBase", async () => {
     initApi("https://app.hubi.com.br/api/public/v1///", "hubi_pk_test");
-    await sendPageview(makePageview());
+    await sendLead(makeLead());
     const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://app.hubi.com.br/api/public/v1/events/pageview");
+    expect(url).toBe("https://app.hubi.com.br/api/public/v1/leads");
   });
 });
 
@@ -117,7 +82,7 @@ describe("send — offline + failure fallback", () => {
     vi.stubGlobal("fetch", vi.fn());
     initApi("https://api.test/v1", "pk_x");
 
-    const ok = await sendPageview(makePageview());
+    const ok = await sendLead(makeLead());
     expect(ok).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });
