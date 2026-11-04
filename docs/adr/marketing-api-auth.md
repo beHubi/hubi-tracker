@@ -6,7 +6,7 @@
 
 ## Context
 
-The Public Leads API (`POST /api/public/v1/leads`; `POST /api/public/v1/events/pageview` until it was removed in November 2026) must be callable from:
+The Public Leads API (`POST /api/public/v1/leads`; `POST /api/public/v1/events/pageview` too, until its removal in November 2026) must be callable from:
 
 1. **Browser JS SDK** (`hubi-tracker`) — runs on landing pages, no secrets available.
 2. **Server-to-server** — trusted backend integrations (e.g., CRMs, Zapier, internal services).

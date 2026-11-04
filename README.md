@@ -102,7 +102,7 @@ The SDK maps form field names to canonical fields automatically, stripping accen
 
 Fields that don't match any variant are forwarded inside `extra` (see [Payload shape](#payload-shape)).
 
-> **Note:** hubi-web keeps `name`, `email`, `phone`, `company` and `job_title` from `fields`. `message` and `mql_question` are sent in `fields` too, but hubi-web doesn't store them today.
+> **Note:** hubi-web reads `name`, `email`, `phone`, `company` and `job_title` from `fields` into the lead's columns. `message` and `mql_question` are sent in `fields` too, but aren't mapped to columns.
 
 ### Force a mapping with `data-hubi-field`
 
